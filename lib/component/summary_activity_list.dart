@@ -17,16 +17,23 @@ class SummaryActivityList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SummaryActivityListBuilder(
-        filter: filter,
-        shrinkWrap: true,
-        emptyBuilder: emptyPageBuilder,
-        builder: (context, activity) {
-          return StandardActivityTile(
-            data: activity,
-            showDeviceName: showDeviceName,
-          );
-        },
-        limit: limit);
+    return context.nafasClient.device.build(
+      builder: (context, selectedDevice) {
+        if (selectedDevice == null) {
+          return Container();
+        }
+        return SummaryActivityListBuilder(
+            filter: filter,
+            shrinkWrap: true,
+            emptyBuilder: emptyPageBuilder,
+            builder: (context, activity) {
+              return StandardActivityTile(
+                data: activity,
+                showDeviceName: showDeviceName,
+              );
+            },
+            limit: limit);
+      },
+    );
   }
 }

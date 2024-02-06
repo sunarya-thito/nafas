@@ -21,7 +21,10 @@ class GlassPane extends StatelessWidget {
           width: 2,
         ),
       ),
-      child: child,
+      child: Material(
+        child: child,
+        color: Colors.transparent,
+      ),
     );
   }
 }

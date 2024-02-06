@@ -24,16 +24,12 @@ class ActivityTile extends StatelessWidget {
           child: Row(
             children: [
               if (icon != null)
-                AspectRatio(
-                  aspectRatio: 1,
-                  child: FittedBox(
-                    child: IconTheme(
-                      data: IconThemeData(
-                        color: context.theme.secondaryTextColor,
-                      ),
-                      child: icon!,
-                    ),
+                IconTheme(
+                  data: IconThemeData(
+                    color: context.theme.secondaryTextColor,
+                    size: 32,
                   ),
+                  child: icon!,
                 ),
               if (icon != null)
                 const SizedBox(

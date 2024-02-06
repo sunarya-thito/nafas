@@ -1,6 +1,7 @@
 import 'package:animated_text_kit/animated_text_kit.dart';
 import 'package:flutter/material.dart';
 import 'package:nafas/app_data.dart';
+import 'package:nafas/component/theme_mode_toggler.dart';
 import 'package:nafas/theme.dart';
 
 import '../nafas_client_app.dart';
@@ -74,11 +75,6 @@ class Greeting extends StatelessWidget {
                                     alignment: Alignment.centerLeft,
                                   ),
                                   RotateAnimatedText(
-                                    'Please sign in',
-                                    textAlign: TextAlign.start,
-                                    alignment: Alignment.centerLeft,
-                                  ),
-                                  RotateAnimatedText(
                                     'Air Quality Control System',
                                     textAlign: TextAlign.start,
                                     alignment: Alignment.centerLeft,
@@ -118,10 +114,7 @@ class Greeting extends StatelessWidget {
                 return AspectRatio(
                   aspectRatio: 1,
                   child: FittedBox(
-                    child: Icon(
-                      Icons.account_circle,
-                      color: context.theme.secondaryTextColor,
-                    ),
+                    child: ThemeModeToggler(),
                   ),
                 );
               },

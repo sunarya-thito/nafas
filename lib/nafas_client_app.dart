@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:collection/collection.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,9 +11,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 const verbose = true;
-
-const kBaseHostname = "192.168.18.133";
-const kBasePort = 8080;
+String kScheme = 'http';
+String kBaseHostname = "localhost";
+int? kBasePort = 8081;
 const kSensorTemperature = "temp";
 const kSensorHumidity = "humid";
 const kSensorCO2 = "co2";
@@ -24,6 +25,8 @@ const kPacketOutboundData = "PacketOutboundData";
 const kPacketOutboundActivity = "PacketOutboundActivity";
 const kPacketOutboundConfig = "PacketOutboundConfig";
 const kPacketOutboundDeviceRename = "PacketOutboundDeviceRename";
+const kPacketInboundColor = "PacketInboundColor";
+const kPacketOutboundColor = "PacketOutboundColor";
 const kRoleAdmin = "admin";
 const kRoleUser = "user";
 const kAPIResponseError = "APIResponseError";
@@ -36,6 +39,7 @@ const kAPIResponseData = "APIResponseData";
 const kAPIResponseForecast = "APIResponseForecast";
 const kAPIResponseSuccess = "APIResponseSuccess";
 const kAPIResponseSensorValues = "APIResponseSensorValues";
+const kAPIResponseColor = "APIResponseColor";
 
 const kAPIRequestSensorValues = "APIRequestSensorValues";
 const kAPIRequestChangeConfig = "APIRequestChangeConfig";
@@ -48,6 +52,7 @@ const kAPIRequestData = "APIRequestData";
 const kAPIRequestForecast = "APIRequestForecast";
 const kAPIRequestBeepDevice = "APIRequestBeepDevice";
 const kAPIRequestRenameDevice = "APIRequestRenameDevice";
+const kAPIRequestColor = "APIRequestColor";
 
 const kActivityCO2High = "co2_high";
 const kActivityCO2Low = "co2_low";
@@ -296,6 +301,20 @@ class ActivityFilter {
       sensors: sensors ?? this.sensors,
     );
   }
+
+  @override
+  bool operator ==(Object other) {
+    if (other is ActivityFilter) {
+      return ListEquality().equals(devices, other.devices) &&
+          fromDate == other.fromDate &&
+          toDate == other.toDate &&
+          ListEquality().equals(sensors, other.sensors);
+    }
+    return false;
+  }
+
+  @override
+  int get hashCode => Object.hash(devices, fromDate, toDate, sensors);
 }
 
 class DataWidget<T> extends InheritedWidget {
@@ -434,14 +453,18 @@ class _SummaryActivityListBuilderState
       _client = newClient;
       _session?.dispose();
       _session = null;
+      _session ??= newClient.createActivityListSession(
+          limit: widget.limit, filter: widget.filter);
     }
-    if (_session == null) {
-      _session = ActivityListSession(
-        limit: widget.limit,
-        filter: widget.filter,
-        client: _client!,
-      );
-      _session!.initialize();
+  }
+
+  @override
+  void didUpdateWidget(covariant SummaryActivityListBuilder oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filter != widget.filter || oldWidget.limit != widget.limit) {
+      _session?.dispose();
+      _session = _client!.createActivityListSession(
+          limit: widget.limit, filter: widget.filter);
     }
   }
 
@@ -493,12 +516,16 @@ extension NafasExtension on BuildContext {
 
 class SensorDetailScope extends StatefulWidget {
   final SensorType type;
+  final int? duration;
+  final Device? device;
   final Widget child;
 
   const SensorDetailScope({
     Key? key,
     required this.type,
     required this.child,
+    this.device,
+    this.duration,
   }) : super(key: key);
 
   @override
@@ -518,7 +545,20 @@ class _SensorDetailScopeState extends State<SensorDetailScope> {
       _sessionValue?.dispose();
       _sessionValue = null;
     }
-    _sessionValue ??= _client!.createSensorDetailSession(widget.type);
+    _sessionValue ??= _client!
+        .createSensorDetailSession(widget.type, widget.device, widget.duration);
+  }
+
+  @override
+  void didUpdateWidget(covariant SensorDetailScope oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.type != widget.type ||
+        oldWidget.device != widget.device ||
+        oldWidget.duration != widget.duration) {
+      _sessionValue?.dispose();
+      _sessionValue = _client!.createSensorDetailSession(
+          widget.type, widget.device, widget.duration);
+    }
   }
 
   @override
@@ -535,7 +575,9 @@ class _SensorDetailScopeState extends State<SensorDetailScope> {
     return _sessionValue!.loading.build(
       builder: (context, future) {
         if (future != null) {
-          return const CircularProgressIndicator();
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
         } else {
           return DataWidget<SensorDetailSession>(
             data: _sessionValue!,
@@ -793,6 +835,8 @@ class NafasClient {
   final ValueNotifier<List<Device>> _devices = ValueNotifier([]);
   final ValueNotifier<Map<SensorType, double>> _sensorValues =
       ValueNotifier({});
+  final ValueNotifier<Map<SensorType, List<DataEntry>>> _realtimeSensorHistory =
+      ValueNotifier({}); // capped at 100 entries
   final ValueNotifier<List<ActivityData>> _activities = ValueNotifier([]);
   // if the activity id is lower than this value, it means that the activity is read
   final ValueNotifier<int> _readActivityId = ValueNotifier(-1);
@@ -802,6 +846,7 @@ class NafasClient {
   final ValueNotifier<ActivityFilter> _currentActivityFilter =
       ValueNotifier(ActivityFilter());
   final List<SensorDetailSession> _activeSensorDetailSessions = [];
+  final List<ColorSession> _activeColorSessions = [];
 
   final List<ActivityListSession> _activeActivityListSessions = [];
   final ValueNotifier<SensorConfigurations> _sensorConfigurations =
@@ -1023,6 +1068,7 @@ class NafasClient {
     if (_currentDevice.value == selectedDevice) {
       return;
     }
+    _realtimeSensorHistory.value = {};
     if (selectedDevice.id != '-1') {
       var sensorValues = await request(APIRequestSensorValues(
         deviceId: selectedDevice.id,
@@ -1060,8 +1106,15 @@ class NafasClient {
     // print stack tra
     // _socket = html.WebSocket(
     //     'ws://$kBaseHostname:$kBasePort/device?id=${selectedDevice.id}');
-    _socket = WebSocketChannel.connect(Uri.parse(
-        'ws://$kBaseHostname:$kBasePort/device?id=${selectedDevice.id}'));
+    _socket = WebSocketChannel.connect(Uri(
+      scheme: kScheme == 'https' ? 'wss' : 'ws',
+      host: kBaseHostname,
+      port: kBasePort ?? (kScheme == 'https' ? 443 : 80),
+      path: '/device',
+      queryParameters: {
+        'id': selectedDevice.id,
+      },
+    ));
     // _socket!.onOpen.listen((event) {
     //   debug('connected to websocket');
     // });
@@ -1104,6 +1157,7 @@ class NafasClient {
       if (!_disposed && _currentDevice.value == selectedDevice) {
         debug('Connection closed, reconnecting...');
         await connect(selectedDevice);
+        debug('Reconnected');
       }
     });
   }
@@ -1131,7 +1185,25 @@ class NafasClient {
           values[type] = entry.value;
         }
       }
-      _sensorValues.value = values;
+      _sensorValues.value = Map.from(values); // copy to trigger update
+      // update realtime sensor history
+      Map<SensorType, List<DataEntry>> history = _realtimeSensorHistory.value;
+      for (var entry in sensorValues.entries) {
+        SensorType? type = SensorType.fromId(entry.key);
+        if (type != null) {
+          List<DataEntry> entries = history[type] ?? [];
+          entries.add(DataEntry(
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+            value: entry.value,
+          ));
+          if (entries.length > 100) {
+            entries.removeAt(0);
+          }
+          history[type] = entries;
+        }
+      }
+      _realtimeSensorHistory.value =
+          Map.from(history); // copy to trigger update
     } else if (packet is PacketOutboundActivity) {
       var activity = packet.activity;
       for (var session in _activeActivityListSessions) {
@@ -1194,6 +1266,11 @@ class NafasClient {
       if (device != null) {
         device.name.value = packet.name;
       }
+    } else if (packet is PacketOutboundColor) {
+      // update color sessions
+      for (var session in _activeColorSessions) {
+        session.color.value = packet.color;
+      }
     } else {
       throw Exception('Unknown packet type $packet');
     }
@@ -1202,7 +1279,7 @@ class NafasClient {
   Future<APIData> request(APIData request) async {
     final json = request.toJson();
     var uri = Uri(
-      scheme: 'http',
+      scheme: kScheme,
       host: kBaseHostname,
       port: kBasePort,
       path: '/api',
@@ -1230,24 +1307,41 @@ class NafasClient {
     // _socket?.send(jsonEncode(json));
   }
 
-  SensorDetailSession createSensorDetailSession(SensorType sensorType) {
-    if (_currentDevice.value == null) {
+  SensorDetailSession createSensorDetailSession(
+      SensorType sensorType, Device? device, int? duration) {
+    device ??= _currentDevice.value;
+    if (device == null) {
       throw Exception('No device selected');
     }
     final session = SensorDetailSession(
-      device: _currentDevice.value!,
+      device: device,
       sensorType: sensorType,
       client: this,
+      duration: duration,
     );
     session.init();
     _activeSensorDetailSessions.add(session);
     return session;
   }
 
-  Future<ActivityListSession> createActivityListSession({
+  ColorSession createColorSession(Device? device) {
+    device ??= _currentDevice.value;
+    if (device == null) {
+      throw Exception('No device selected');
+    }
+    final session = ColorSession(
+      device: device,
+      client: this,
+    );
+    session.init();
+    _activeColorSessions.add(session);
+    return session;
+  }
+
+  ActivityListSession createActivityListSession({
     required int limit,
     required ActivityFilter filter,
-  }) async {
+  }) {
     if (_currentDevice.value == null) {
       throw Exception('No device selected');
     }
@@ -1256,7 +1350,7 @@ class NafasClient {
       filter: filter,
       client: this,
     );
-    await session.initialize();
+    session.initialize();
     _activeActivityListSessions.add(session);
     return session;
   }
@@ -1265,6 +1359,86 @@ class NafasClient {
     if (activity.id > _readActivityId.value) {
       _readActivityId.value = activity.id;
     }
+  }
+}
+
+class ColorSession {
+  final ValueNotifier<Color> color = ValueNotifier(Colors.black);
+  final ValueNotifier<bool> loading = ValueNotifier(true);
+  final NafasClient client;
+  final Device device;
+
+  ColorSession({
+    required this.client,
+    required this.device,
+  });
+
+  void init() {
+    loading.value = true;
+    client.request(APIRequestColor(deviceId: device.id)).then((value) {
+      if (value is APIResponseColor) {
+        color.value = value.color;
+      }
+      loading.value = false;
+    });
+  }
+
+  void changeColor(Color color) {
+    client.sendPacket(PacketInboundColor(color: color));
+    this.color.value = color;
+  }
+
+  void dispose() {
+    client._activeColorSessions.remove(this);
+  }
+}
+
+class ColorSessionBuilder extends StatefulWidget {
+  final Widget Function(BuildContext context, Color color,
+      void Function(Color color) setColor) builder;
+
+  const ColorSessionBuilder({
+    Key? key,
+    required this.builder,
+  }) : super(key: key);
+
+  @override
+  _ColorSessionBuilderState createState() => _ColorSessionBuilderState();
+}
+
+class _ColorSessionBuilderState extends State<ColorSessionBuilder> {
+  ColorSession? session;
+  NafasClient? client;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    NafasClient client = context.nafasClient;
+    if (client != this.client) {
+      this.client = client;
+      session?.dispose();
+      session = client.createColorSession(null);
+    }
+  }
+
+  @override
+  void dispose() {
+    session?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return session!.loading.build(
+      builder: (context, isLoading) {
+        if (isLoading) {
+          return const SizedBox();
+        }
+        return session!.color.build(builder: (context, color) {
+          return widget.builder(context, color, session!.changeColor);
+        });
+      },
+    );
   }
 }
 
@@ -1388,6 +1562,7 @@ class ActivityListSession {
       newActivities = newActivities.sublist(0, limit);
     }
     activities.value = newActivities;
+    print('new activity: ${activity.type}');
   }
 
   void dispose() {
@@ -1438,7 +1613,10 @@ class SensorDetailSession {
     required this.client,
     required this.device,
     required this.sensorType,
-  });
+    required int? duration,
+  }) {
+    this.duration.value = duration;
+  }
 
   void changeDuration(int? duration) {
     this.duration.value = duration;
@@ -1457,37 +1635,41 @@ class SensorDetailSession {
   }
 
   void pushDataEntry(DataEntry entry) {
-    dataHistory.value.add(entry);
+    List<DataEntry> dataHistory = [...this.dataHistory.value, entry];
     // update average
     double sum = 0;
-    for (var entry in dataHistory.value) {
+    for (var entry in dataHistory) {
       sum += entry.value;
     }
-    average.value = sum / dataHistory.value.length;
+    average.value = sum / dataHistory.length;
     // update highest
-    double highest = 0;
-    int highestTimestamp = 0;
-    for (var entry in dataHistory.value) {
-      if (entry.value > highest) {
+    double? highest;
+    int? highestTimestamp;
+    for (var entry in dataHistory) {
+      if (highest == null || entry.value > highest) {
         highest = entry.value;
         highestTimestamp = entry.timestamp;
       }
     }
-    this.highest.value = highest;
+    this.highest.value = highest ?? 0;
     // update highest timestamp
-    this.highestTimestamp.value = highestTimestamp;
+    this.highestTimestamp.value =
+        highestTimestamp ?? DateTime.now().millisecondsSinceEpoch;
     // update lowest
-    double lowest = 0;
-    int lowestTimestamp = 0;
-    for (var entry in dataHistory.value) {
-      if (entry.value < lowest) {
+    double? lowest;
+    int? lowestTimestamp;
+    for (var entry in dataHistory) {
+      if (lowest == null || entry.value < lowest) {
         lowest = entry.value;
         lowestTimestamp = entry.timestamp;
       }
     }
-    this.lowest.value = lowest;
+    this.lowest.value = lowest ?? 0;
     // update lowest timestamp
-    this.lowestTimestamp.value = lowestTimestamp;
+    this.lowestTimestamp.value =
+        lowestTimestamp ?? DateTime.now().millisecondsSinceEpoch;
+    // update data history
+    this.dataHistory.value = dataHistory;
   }
 
   Future<void> _init() async {
@@ -1516,6 +1698,44 @@ class SensorDetailSession {
         highestTimestamp.value = data.highestWhen;
         average.value = data.average;
       }
+    } else {
+      List<DataEntry>? cachedRealtimeData =
+          client._realtimeSensorHistory.value[sensorType];
+      if (cachedRealtimeData != null) {
+        dataHistory.value = cachedRealtimeData;
+        // calculate average
+        double sum = 0;
+        for (var entry in cachedRealtimeData) {
+          sum += entry.value;
+        }
+        average.value = sum / cachedRealtimeData.length;
+        // calculate highest
+        double? highest;
+        int? highestTimestamp;
+        for (var entry in cachedRealtimeData) {
+          if (highest == null || entry.value > highest) {
+            highest = entry.value;
+            highestTimestamp = entry.timestamp;
+          }
+        }
+        this.highest.value = highest ?? 0;
+        // update highest timestamp
+        this.highestTimestamp.value =
+            highestTimestamp ?? DateTime.now().millisecondsSinceEpoch;
+        // update lowest
+        double? lowest;
+        int? lowestTimestamp;
+        for (var entry in cachedRealtimeData) {
+          if (lowest == null || entry.value < lowest) {
+            lowest = entry.value;
+            lowestTimestamp = entry.timestamp;
+          }
+        }
+        this.lowest.value = lowest ?? 0;
+        // update lowest timestamp
+        this.lowestTimestamp.value =
+            lowestTimestamp ?? DateTime.now().millisecondsSinceEpoch;
+      }
     }
   }
 }
@@ -1530,6 +1750,10 @@ Packet packetFromJson(Map<String, dynamic> data) {
       return PacketConfigChangeOutbound.fromJson(data);
     case kPacketOutboundDeviceRename:
       return PacketDeviceRenameOutbound.fromJson(data);
+    case kPacketInboundColor:
+      return PacketInboundColor.fromJson(data);
+    case kPacketOutboundColor:
+      return PacketOutboundColor.fromJson(data);
     default:
       throw Exception('Unknown packet type: ${data['type']}');
   }
@@ -1557,6 +1781,8 @@ APIData parseAPIData(Map<String, dynamic> data) {
       return APIResponseSuccess.fromJson(data);
     case kAPIResponseSensorValues:
       return APIResponseSensorValues.fromJson(data);
+    case kAPIResponseColor:
+      return APIResponseColor.fromJson(data);
     default:
       throw Exception('Unknown API response type: ${data['type']}');
   }
@@ -1570,6 +1796,53 @@ class Packet {
   Map<String, dynamic> toJson() {
     return {
       'type': type,
+    };
+  }
+}
+
+class PacketInboundColor extends Packet {
+  final Color color;
+
+  PacketInboundColor.fromJson(Map<String, dynamic> data)
+      : color = APIResponseColor.fromMap(data['color']),
+        super.fromJson(data);
+
+  PacketInboundColor({required this.color}) : super(type: kPacketInboundColor);
+
+  @override
+  Map<String, dynamic> toJson() {
+    HSVColor hsv = HSVColor.fromColor(color);
+    return {
+      ...super.toJson(),
+      'color': {
+        'hue': (hsv.hue / 360 * 255).toInt(),
+        'saturation': (hsv.saturation * 255).toInt(),
+        'value': (hsv.value * 255).toInt(),
+      }
+    };
+  }
+}
+
+class PacketOutboundColor extends Packet {
+  final Color color;
+
+  PacketOutboundColor.fromJson(Map<String, dynamic> data)
+      : color = APIResponseColor.fromMap(data['color']),
+        super.fromJson(data);
+
+  PacketOutboundColor({required this.color})
+      : super(type: kPacketOutboundColor);
+
+  @override
+  Map<String, dynamic> toJson() {
+    HSVColor hsv = HSVColor.fromColor(color);
+    return {
+      ...super.toJson(),
+      'color': {
+        'hue': (hsv.hue / 360 * 255).toInt(),
+        'saturation': (hsv.saturation * 255).toInt(),
+        'value': (hsv.value * 255).toInt(),
+      }
     };
   }
 }
@@ -1844,6 +2117,49 @@ class APIRequestLogout extends APIData {
       'userToken': userToken,
     };
   }
+}
+
+class APIRequestColor extends APIData {
+  final String deviceId;
+
+  APIRequestColor.fromJson(Map<String, dynamic> data)
+      : deviceId = data['deviceId'],
+        super.fromJson(data);
+
+  APIRequestColor({required this.deviceId}) : super(type: kAPIRequestColor);
+
+  @override
+  Map<String, dynamic> toJson() {
+    return {
+      ...super.toJson(),
+      'deviceId': deviceId,
+    };
+  }
+}
+
+class APIResponseColor extends APIData {
+  final Color color;
+
+  static Color fromHSV(double hue, double saturation, double value) {
+    hue = hue.clamp(0, 360);
+    saturation = saturation.clamp(0, 1);
+    value = value.clamp(0, 1);
+    return HSVColor.fromAHSV(1, hue, saturation, value).toColor();
+  }
+
+  static Color fromMap(Map<String, dynamic> data) {
+    int hue = (data['hue'] as num).toInt();
+    int saturation = (data['saturation'] as num).toInt();
+    int value = (data['value'] as num).toInt();
+    double transformedHue = hue / 255 * 360;
+    double transformedSaturation = saturation / 255;
+    double transformedValue = value / 255;
+    return fromHSV(transformedHue, transformedSaturation, transformedValue);
+  }
+
+  APIResponseColor.fromJson(Map<String, dynamic> data)
+      : color = fromMap(data['color'] as Map<String, dynamic>),
+        super.fromJson(data);
 }
 
 class APIRequestConfig extends APIData {
@@ -2249,10 +2565,10 @@ class Device {
   }
 
   Future<void> rename(String name) async {
-    await client.sendPacket(PacketDeviceRenameOutbound(
-      deviceId: id,
-      name: name,
-    ));
+    await client.request(APIRequestRenameDevice(
+        userToken: client._currentUser.value?.token ?? '',
+        deviceId: id,
+        deviceName: name));
     // no need to update the name here, it will be updated by the server
   }
 }
@@ -2400,6 +2716,7 @@ class _SensorSessionChartState extends State<SensorSessionChart> {
   Widget build(BuildContext context) {
     SensorDetailSession session =
         DataWidget.of<SensorDetailSession>(context)!.data;
+    int? duration = session.duration.value;
     return GestureDetector(
       // TODO: Scrollable
       child: ValueListenableBuilder<List<DataEntry>>(
@@ -2509,7 +2826,7 @@ class _SensorSessionChartState extends State<SensorSessionChart> {
                     color: widget.contentColor ?? Colors.blue.withOpacity(0.3),
                   ),
                   dotData: FlDotData(
-                    show: true,
+                    show: duration == null,
                     getDotPainter: (spot, val, barData, i) {
                       return FlDotCirclePainter(
                         radius: 4,
@@ -2540,6 +2857,7 @@ enum ForecastType {
 }
 
 class SensorForecastingChart extends StatefulWidget {
+  final Device? device;
   final SensorType sensor;
   final Border? border;
   final Color? titleColor;
@@ -2548,10 +2866,12 @@ class SensorForecastingChart extends StatefulWidget {
   final Color? outlineDotColor;
   final Color? dotColor;
   final Color? contentColor;
+  final int? duration;
 
   const SensorForecastingChart({
     Key? key,
     required this.sensor,
+    this.device,
     this.border,
     this.titleColor,
     this.gridColor,
@@ -2559,6 +2879,7 @@ class SensorForecastingChart extends StatefulWidget {
     this.outlineDotColor,
     this.dotColor,
     this.contentColor,
+    this.duration,
   }) : super(key: key);
 
   @override
@@ -2574,8 +2895,8 @@ class _SensorForecastingChartState extends State<SensorForecastingChart> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _session?.forecastType.removeListener(_onChangeType);
-    _session = DataWidget.of<SensorDetailSession>(context)!.data;
-    _session!.forecastType.addListener(_onChangeType);
+    _session = DataWidget.of<SensorDetailSession>(context)?.data;
+    _session?.forecastType.addListener(_onChangeType);
     _future = _fetchData();
   }
 
@@ -2588,9 +2909,11 @@ class _SensorForecastingChartState extends State<SensorForecastingChart> {
   Future<List<DataEntry>> _fetchData() async {
     NafasClient client = DataWidget.of<NafasClient>(context)!.data;
     var response = await client.request(APIRequestForecast(
-      deviceId: client._currentDevice.value!.id,
+      deviceId: widget.device?.id ?? client._currentDevice.value!.id,
       sensorId: widget.sensor.id,
-      forecastUntil: _session!.forecastType.value.duration,
+      forecastUntil: _session?.forecastType.value.duration ??
+          widget.duration ??
+          (1000 * 60 * 60 * 24),
     ));
     if (response is APIResponseForecast) {
       return response.forecast;
@@ -2601,43 +2924,28 @@ class _SensorForecastingChartState extends State<SensorForecastingChart> {
   }
 
   @override
+  void didUpdateWidget(covariant SensorForecastingChart oldWidget) {
+    if (oldWidget.sensor != widget.sensor ||
+        oldWidget.device != widget.device ||
+        oldWidget.duration != widget.duration) {
+      _future = _fetchData();
+    }
+    super.didUpdateWidget(oldWidget);
+  }
+
+  @override
+  void dispose() {
+    _session?.forecastType.removeListener(_onChangeType);
+    _future = Future.value([]);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    SensorDetailSession session =
-        DataWidget.of<SensorDetailSession>(context)!.data;
     return FutureBuilder<List<DataEntry>>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.hasData) {
-          // return LineChart(
-          //   LineChartData(
-          //     gridData: FlGridData(
-          //       show: true,
-          //     ),
-          //     titlesData: FlTitlesData(
-          //       show: false,
-          //     ),
-          //     borderData: FlBorderData(
-          //       show: false,
-          //     ),
-          //     lineBarsData: [
-          //       LineChartBarData(
-          //         spots: snapshot.data!
-          //             .map((e) => FlSpot(
-          //                   e.timestamp.toDouble(),
-          //                   e.value,
-          //                 ))
-          //             .toList(),
-          //         isCurved: true,
-          //         color: Colors.blue,
-          //         barWidth: 2,
-          //         dotData: FlDotData(
-          //           show: false,
-          //         ),
-          //       ),
-          //     ],
-          //   ),
-          // );
-          // MAKE IT SAME AS THE SENSOR SESSION CHART
           return LineChart(
             LineChartData(
               clipData: FlClipData.all(),
@@ -2725,7 +3033,7 @@ class _SensorForecastingChartState extends State<SensorForecastingChart> {
                     color: widget.contentColor ?? Colors.blue.withOpacity(0.3),
                   ),
                   dotData: FlDotData(
-                    show: true,
+                    show: false,
                     getDotPainter: (spot, val, barData, i) {
                       return FlDotCirclePainter(
                         radius: 4,

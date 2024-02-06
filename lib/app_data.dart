@@ -69,6 +69,7 @@ class _NafasDataState extends State<NafasData> {
                 : const GlassThemeData.light(),
             child: NafasDataWidget._(
               state: this,
+              mode: mode,
               child: widget.child,
             ),
           );
@@ -84,11 +85,13 @@ class _NafasDataState extends State<NafasData> {
 
 class NafasDataWidget extends InheritedWidget {
   final _NafasDataState _state;
+  final ThemeMode mode;
 
   const NafasDataWidget._({
     Key? key,
     required _NafasDataState state,
     required Widget child,
+    required this.mode,
   })  : _state = state,
         super(key: key, child: child);
 
@@ -111,6 +114,6 @@ class NafasDataWidget extends InheritedWidget {
 
   @override
   bool updateShouldNotify(covariant NafasDataWidget oldWidget) {
-    return _state != oldWidget._state;
+    return _state != oldWidget._state || mode != oldWidget.mode;
   }
 }

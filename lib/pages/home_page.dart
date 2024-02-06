@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:nafas/component/greeting.dart';
 import 'package:nafas/component/grid.dart';
+import 'package:nafas/component/lamp_color_picker.dart';
 import 'package:nafas/component/page_section.dart';
 import 'package:nafas/component/select_device_button.dart';
 import 'package:nafas/component/sensor_card.dart';
@@ -19,6 +20,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
+    return buildListView(context);
+  }
+
+  ListView buildListView(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
       shrinkWrap: true,
@@ -105,6 +110,13 @@ class _HomePageState extends State<HomePage> {
               if (context.currentDevice != null) context.currentDevice!,
             ]),
           ),
+        ),
+        PageSection(
+          title: Text('Lamp Color'),
+          child: LampColorPicker(),
+        ),
+        const SizedBox(
+          height: 16,
         ),
       ],
     );

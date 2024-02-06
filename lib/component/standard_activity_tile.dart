@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:nafas/component/activity_tile.dart';
 import 'package:nafas/nafas_client_app.dart';
 import 'package:nafas/theme.dart';
@@ -55,7 +56,7 @@ Map<String, SensorType> _typeMapping = {
   'dust_low': SensorType.dust,
 };
 
-class StandardActivityTile extends StatelessWidget {
+class StandardActivityTile extends StatefulWidget {
   final ActivityData data;
   final bool showDeviceName;
 
@@ -65,12 +66,37 @@ class StandardActivityTile extends StatelessWidget {
     this.showDeviceName = false,
   }) : super(key: key);
 
+  @override
+  State<StandardActivityTile> createState() => _StandardActivityTileState();
+}
+
+class _StandardActivityTileState extends State<StandardActivityTile>
+    with SingleTickerProviderStateMixin {
+  late Ticker ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    ticker = createTicker((elapsed) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+    ticker.start();
+  }
+
+  @override
+  void dispose() {
+    ticker.dispose();
+    super.dispose();
+  }
+
   String get header {
-    var deviceName = data.device;
-    var time = DateTime.fromMillisecondsSinceEpoch(data.timestamp);
+    var deviceName = widget.data.device;
+    var time = DateTime.fromMillisecondsSinceEpoch(widget.data.timestamp);
     // Date - Device Name
     // date format: dd/MM/yyyy HH:mm
-    if (showDeviceName) {
+    if (widget.showDeviceName) {
       // return '${relativeTime(activity.data.time, DateTime.now())} - ${activity.device.name}';
       return '${relativeTime(time, DateTime.now())} - $deviceName';
     }
@@ -82,23 +108,23 @@ class StandardActivityTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return ActivityTile(
       header: Text(header),
-      content: Text(_nameMapping[data.type] ?? data.type),
+      content: Text(_nameMapping[widget.data.type] ?? widget.data.type),
       icon: ActivityReadMarker(
-        activity: data,
-        child: _iconMapping[data.type] ?? const Icon(Icons.error),
+        activity: widget.data,
+        child: _iconMapping[widget.data.type] ?? const Icon(Icons.error),
       ),
-      trailing: _unitMapping[_typeMapping[data.type]] == null
+      trailing: _unitMapping[_typeMapping[widget.data.type]] == null
           ? DefaultTextStyle(
               style: TextStyle(
                 fontSize: 18,
                 color: context.theme.secondaryTextColor,
               ),
               child: Text(
-                data.device,
+                widget.data.device,
               ),
             )
           : Text(
-              '${formatNumber(data.value, fractionDigits: 2)}${_unitMapping[_typeMapping[data.type]]}',
+              '${formatNumber(widget.data.value, fractionDigits: 2)}${_unitMapping[_typeMapping[widget.data.type]]}',
               style: TextStyle(
                 fontSize: 18,
                 color: context.theme.secondaryTextColor,

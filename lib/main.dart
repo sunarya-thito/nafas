@@ -1,3 +1,6 @@
+import 'dart:html' as html;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:nafas/app_data.dart';
@@ -9,8 +12,20 @@ import 'package:nafas/pages/home_page.dart';
 import 'package:nafas/pages/log_page.dart';
 import 'package:nafas/pages/status_detail_page.dart';
 import 'package:nafas/pages/status_page.dart';
+import 'package:nafas/pages/web_page.dart';
 
 void main() {
+  if (!kDebugMode) {
+    kScheme = html.window.location.protocol;
+    if (kScheme == 'http:') {
+      kScheme = 'http';
+    } else {
+      kScheme = 'https';
+    }
+    kBaseHostname = html.window.location.hostname ?? 'localhost';
+    kBasePort = int.tryParse(html.window.location.port);
+  }
+  print('Initializing with hostname: $kBaseHostname and port: $kBasePort');
   GoRouter.optionURLReflectsImperativeAPIs = true;
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const NafasApp());
@@ -155,6 +170,40 @@ class _NafasAppState extends State<NafasApp> {
 
   @override
   Widget build(BuildContext context) {
+    if (kIsWeb) {
+      return OrientationBuilder(
+        builder: (context, orientation) {
+          if (orientation == Orientation.landscape) {
+            return NafasClientApp(
+              child: NafasData(
+                child: Builder(
+                  builder: (context) {
+                    return MaterialApp(
+                      theme: NafasDataWidget.of(context)!.themeMode ==
+                              ThemeMode.dark
+                          ? ThemeData.dark(
+                              useMaterial3: true,
+                            )
+                          : ThemeData.light(
+                              useMaterial3: true,
+                            ),
+                      debugShowCheckedModeBanner: false,
+                      title: 'Nafas',
+                      home: WebPage(),
+                    );
+                  },
+                ),
+              ),
+            );
+          }
+          return buildNafasClientApp();
+        },
+      );
+    }
+    return buildNafasClientApp();
+  }
+
+  NafasClientApp buildNafasClientApp() {
     return NafasClientApp(
       child: NafasData(
         child: Builder(builder: (context) {

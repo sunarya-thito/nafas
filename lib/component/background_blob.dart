@@ -57,6 +57,9 @@ class _ShaderBackgroundBlobState extends State<ShaderBackgroundBlob>
     )..repeat();
     _controller.addListener(
       () {
+        if (!mounted) {
+          return;
+        }
         setState(() {
           for (int i = 0; i < 3; i++) {
             Blob blob = blobs[i];
@@ -66,6 +69,12 @@ class _ShaderBackgroundBlobState extends State<ShaderBackgroundBlob>
         });
       },
     );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
